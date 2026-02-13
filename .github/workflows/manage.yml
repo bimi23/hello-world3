@@ -1,0 +1,81 @@
+name: App Management
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - status
+          - logs
+          - restart
+          - list
+          - stop
+          - remove
+      lines:
+        description: 'Number of log lines (only for logs action)'
+        required: false
+        default: '100'
+
+jobs:
+  manage:
+    name: "${{ inputs.action }}"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Run action
+        run: |
+          SSH="ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_SERVER_USER }}@${{ secrets.DEPLOY_SERVER_HOST }}"
+          APP="${{ secrets.DEPLOY_APP_NAME }}"
+
+          case "${{ inputs.action }}" in
+            status)
+              $SSH "cd /apps/$APP && \
+                echo '=== Container Status ===' && \
+                docker compose ps && \
+                echo '' && \
+                echo '=== Resource Usage ===' && \
+                docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' \$(docker compose ps -q)"
+              ;;
+            logs)
+              $SSH "cd /apps/$APP && docker compose logs --tail=${{ inputs.lines }}"
+              ;;
+            restart)
+              $SSH "cd /apps/$APP && \
+                docker compose restart && \
+                sleep 3 && \
+                echo '=== Status after restart ===' && \
+                docker compose ps"
+              ;;
+            stop)
+              $SSH "cd /apps/$APP && \
+                docker compose down && \
+                echo '=== App stopped ===' && \
+                echo 'Containers removed, app is no longer running.' && \
+                echo 'Files remain in /apps/$APP for restart later.'"
+              ;;
+            remove)
+              $SSH "cd /apps/$APP && \
+                docker compose down -v --rmi all 2>/dev/null || docker compose down -v 2>/dev/null || true && \
+                cd / && rm -rf /apps/$APP && \
+                echo '=== App removed ===' && \
+                echo 'Containers, volumes, and files deleted.'"
+              ;;
+            list)
+              $SSH "for d in /apps/*/; do \
+                app=\$(basename \"\$d\"); \
+                [ \"\$app\" = 'traefik' ] && continue; \
+                echo \"=== \$app ===\"; \
+                cd \"\$d\" && docker compose ps 2>/dev/null || echo 'not running'; \
+                echo ''; \
+              done"
+              ;;
+          esac

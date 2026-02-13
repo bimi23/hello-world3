@@ -1,0 +1,59 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Sync code to server
+        run: |
+          APP="${{ secrets.DEPLOY_APP_NAME }}"
+          HOST="${{ secrets.DEPLOY_SERVER_USER }}@${{ secrets.DEPLOY_SERVER_HOST }}"
+          SSH="ssh -i ~/.ssh/deploy_key"
+
+          # Create app dir if needed
+          $SSH $HOST "mkdir -p /apps/$APP"
+
+          # Rsync code to server
+          rsync -avz --delete \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude '.next' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ $HOST:/apps/$APP/
+
+      - name: Build and deploy
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              ${{ secrets.DEPLOY_SERVER_USER }}@${{ secrets.DEPLOY_SERVER_HOST }} \
+              "cd /apps/${{ secrets.DEPLOY_APP_NAME }} && \
+               docker compose build && \
+               docker compose up -d && \
+               sleep 5 && \
+               docker compose ps"
+
+      - name: Health check
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              ${{ secrets.DEPLOY_SERVER_USER }}@${{ secrets.DEPLOY_SERVER_HOST }} \
+              "cd /apps/${{ secrets.DEPLOY_APP_NAME }} && \
+               if docker compose ps | grep -q 'Up'; then \
+                 echo '✅ Deployment successful'; \
+               else \
+                 echo '❌ Health check failed'; \
+                 exit 1; \
+               fi"

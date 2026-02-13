@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      - HOSTNAME=0.0.0.0
+    networks:
+      - web
+    labels:
+      caddy: hello3.dev.kermin.de
+      caddy.reverse_proxy: "{{upstreams 3000}}"
+
+networks:
+  web:
+    external: true
