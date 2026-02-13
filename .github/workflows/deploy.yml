@@ -5,55 +5,109 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# Avoid two deploys racing each other on the same branch.
+concurrency:
+  group: deploy-production-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   deploy:
     name: Deploy to Production
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup SSH
+      - name: Preflight (required secrets)
+        shell: bash
+        env:
+          DEPLOY_APP_NAME: ${{ secrets.DEPLOY_APP_NAME }}
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
+          set -euo pipefail
+
+          for v in DEPLOY_APP_NAME DEPLOY_SERVER_HOST DEPLOY_SERVER_USER DEPLOY_SSH_KEY; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error title=Missing required secret::$v is empty or not set"
+              exit 1
+            fi
+          done
+
+      - name: Setup SSH
+        shell: bash
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+
           mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 700 ~/.ssh
+
+          # Write key exactly as stored in the secret (preserve newlines).
+          printf "%s" "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.DEPLOY_SERVER_HOST }} >> ~/.ssh/known_hosts
+
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keyscan -H "$DEPLOY_SERVER_HOST" >> ~/.ssh/known_hosts
 
       - name: Sync code to server
+        shell: bash
+        env:
+          DEPLOY_APP_NAME: ${{ secrets.DEPLOY_APP_NAME }}
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
         run: |
-          APP="${{ secrets.DEPLOY_APP_NAME }}"
-          HOST="${{ secrets.DEPLOY_SERVER_USER }}@${{ secrets.DEPLOY_SERVER_HOST }}"
-          SSH="ssh -i ~/.ssh/deploy_key"
+          set -euo pipefail
+
+          APP="$DEPLOY_APP_NAME"
+          HOST="$DEPLOY_SERVER_USER@$DEPLOY_SERVER_HOST"
+
+          SSH_COMMON_OPTS="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts"
+          SSH="ssh $SSH_COMMON_OPTS -i ~/.ssh/deploy_key"
 
           # Create app dir if needed
-          $SSH $HOST "mkdir -p /apps/$APP"
+          $SSH "$HOST" "mkdir -p /apps/$APP"
 
           # Rsync code to server
           rsync -avz --delete \
             --exclude '.git' \
             --exclude 'node_modules' \
             --exclude '.next' \
-            -e "ssh -i ~/.ssh/deploy_key" \
-            ./ $HOST:/apps/$APP/
+            -e "ssh $SSH_COMMON_OPTS -i ~/.ssh/deploy_key" \
+            ./ "$HOST:/apps/$APP/"
 
       - name: Build and deploy
+        shell: bash
+        env:
+          DEPLOY_APP_NAME: ${{ secrets.DEPLOY_APP_NAME }}
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
         run: |
-          ssh -i ~/.ssh/deploy_key \
-              ${{ secrets.DEPLOY_SERVER_USER }}@${{ secrets.DEPLOY_SERVER_HOST }} \
-              "cd /apps/${{ secrets.DEPLOY_APP_NAME }} && \
-               docker compose build && \
-               docker compose up -d && \
-               sleep 5 && \
-               docker compose ps"
+          set -euo pipefail
+
+          SSH_COMMON_OPTS="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts"
+          HOST="$DEPLOY_SERVER_USER@$DEPLOY_SERVER_HOST"
+
+          ssh $SSH_COMMON_OPTS -i ~/.ssh/deploy_key \
+              "$HOST" \
+              "cd /apps/$DEPLOY_APP_NAME && docker compose build && docker compose up -d && sleep 5 && docker compose ps"
 
       - name: Health check
+        shell: bash
+        env:
+          DEPLOY_APP_NAME: ${{ secrets.DEPLOY_APP_NAME }}
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
         run: |
-          ssh -i ~/.ssh/deploy_key \
-              ${{ secrets.DEPLOY_SERVER_USER }}@${{ secrets.DEPLOY_SERVER_HOST }} \
-              "cd /apps/${{ secrets.DEPLOY_APP_NAME }} && \
-               if docker compose ps | grep -q 'Up'; then \
-                 echo '✅ Deployment successful'; \
-               else \
-                 echo '❌ Health check failed'; \
-                 exit 1; \
-               fi"
+          set -euo pipefail
+
+          SSH_COMMON_OPTS="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts"
+          HOST="$DEPLOY_SERVER_USER@$DEPLOY_SERVER_HOST"
+
+          ssh $SSH_COMMON_OPTS -i ~/.ssh/deploy_key \
+              "$HOST" \
+              "cd /apps/$DEPLOY_APP_NAME && if docker compose ps | grep -q 'Up'; then echo 'Deployment healthy'; else echo 'Health check failed'; exit 1; fi"
