@@ -47,7 +47,7 @@ jobs:
           chmod 700 ~/.ssh
 
           # Write key exactly as stored in the secret (preserve newlines).
-          printf "%s" "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf "%s\n" "$DEPLOY_SSH_KEY" | tr -d "\r" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
           touch ~/.ssh/known_hosts
