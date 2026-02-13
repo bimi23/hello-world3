@@ -1,0 +1,23 @@
+name: Add SSH Key
+on: workflow_dispatch
+jobs:
+  add-key:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf "%s\n" "$DEPLOY_SSH_KEY" | tr -d "\r" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Add new key
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_SERVER_USER@$DEPLOY_SERVER_HOST" \
+            'echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIit/qPBjLQ1OrVCprmlkXZsb46EmxtXv1YlqlhSJBOb hello-troi-deploy" >> ~/.ssh/authorized_keys'
+          echo "Key added successfully"
